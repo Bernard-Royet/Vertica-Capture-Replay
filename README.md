@@ -1,77 +1,77 @@
 # Vertica-Capture-Replay
-vertica_replay.py - Capture queries from Vertica's Data Collector and replay them.
+vertica_replay.py - Capture queries from Vertica's Data Collector and replay them.  
  
-WORKFLOW (two steps, so the workload can be reviewed/archived before it runs)
-  1) extract : v_internal.dc_requests_issued (source DB)  ->  workload.jsonl
-  2) replay  : workload.jsonl  ->  target DB, plus a CSV comparison report
+WORKFLOW (two steps, so the workload can be reviewed/archived before it runs)  
+  1) extract : v_internal.dc_requests_issued (source DB)  ->  workload.jsonl  
+  2) replay  : workload.jsonl  ->  target DB, plus a CSV comparison report  
  
-USAGE
-  vertica_replay.py extract -H HOST -d DB -u USER --since TS --until TS -o FILE [options]
-  vertica_replay.py replay  -H HOST -d DB -u USER -i FILE [-r REPORT] [options]
-  vertica_replay.py {extract|replay} -h        show all options of one command
- 
-CONNECTION OPTIONS (both commands)
-  -H, --host HOST        Vertica host (required)
-  -P, --port PORT        port (default 5433)
-  -d, --database DB      database name (required)
-  -u, --user USER        login user (required). Password: VERTICA_PASSWORD env var
-  --tls                  require TLS
-  --label LABEL          session label for this tool's connections (default 'replay')
-  --debug                verbose trace on stderr (see DEBUG MODE)
-  --debug-file FILE      also write the trace to FILE (implies --debug)
- 
-EXTRACT OPTIONS
-  --since TS             start of capture window, e.g. '2026-10-07 08:00:00' (required)
-  --until TS             end of capture window, exclusive (required)
-  -o, --output FILE      JSONL output file (required)
-  --types LIST           request_type values to capture, comma-separated
-                         (default ALL = every request_type, no filter; to restrict,
-                         e.g. QUERY or QUERY,DDL,LOAD,UTILITY,TXN,SET,...)
-  --source-user USER     capture only statements issued by this user
-  --exclude-user USER    drop statements from this user; repeatable
-                         (monitoring/service accounts)
-  --exclude-regex REGEX  drop statements matching this Vertica regex
-                         (case-insensitive); repeatable
-  --include-system       keep the internal/system statements that are excluded by
-                         default (see below)
-  --no-duration          do not join v_monitor.query_requests: skips the original
-                         duration/success (use if that view is not accessible)
-  --summary-file FILE    where to save the end-of-run summary
-                         (default <output>.summary.txt; a .json twin is also written)
- 
-  End-of-run summary (printed, and saved as .txt and .json): command line and all
-  effective flags (defaults included), source, window, filters and the exclusion
-  regexes applied, candidates vs captured (what the filters removed), first/last
-  statement, sessions, users, request types, read-only vs non-read-only counts,
-  original-duration coverage and stats, output size and SHA-256, and warnings.
- 
-  Excluded by default: statements referencing v_catalog., v_monitor. or
-  v_internal. (vsql \d, BI-tool metadata scans, monitoring), keepalives such as
-  SELECT 1 / version() / current_*(), and anything touching dc_requests_issued.
-  Order of the capture: time, session_id, statement_id, request_id.
-  Each JSONL record: time, node_name, session_id, user_name, transaction_id,
-  statement_id, request_id, request_type, request, request_duration_ms, success.
- 
-REPLAY OPTIONS
-  -i, --input FILE       JSONL produced by extract (required)
-  -r, --report FILE      CSV report (default replay_report.csv)
-  --mode {serial,session}
-                         serial  (default): one connection, global order.
-                         session: one connection per original session_id, run in
-                         parallel; order kept within each session.
-  --max-concurrency N    session mode: max simultaneous connections
-                         (default 0 = one per session). If lower than the number of
-                         sessions, later sessions wait for a free slot, so overlap
-                         is lower than the original.
-  --respect-timing       reproduce the original time offsets between statements
-                         (without it: serial runs back to back; session mode starts
-                         all sessions at once, i.e. a stress test)
-  --speed X              with --respect-timing: 2.0 = twice as fast (default 1.0)
-  --max-rows N           stop fetching after N rows per query (default 0 = all)
-  --allow-dml            also run non-SELECT statements. DANGEROUS: by default only
-                         SELECT/WITH run and everything else is reported SKIPPED
-  --impersonate          run each statement as its original user using
-                         SET SESSION AUTHORIZATION (needs a privileged replay
+USAGE  
+  vertica_replay.py extract -H HOST -d DB -u USER --since TS --until TS -o FILE [options]  
+  vertica_replay.py replay  -H HOST -d DB -u USER -i FILE [-r REPORT] [options]  
+  vertica_replay.py {extract|replay} -h        show all options of one command  
+   
+CONNECTION OPTIONS (both commands)  
+  -H, --host HOST        Vertica host (required)  
+  -P, --port PORT        port (default 5433)  
+  -d, --database DB      database name (required)  
+  -u, --user USER        login user (required). Password: VERTICA_PASSWORD env var  
+  --tls                  require TLS  
+  --label LABEL          session label for this tool's connections (default 'replay')  
+  --debug                verbose trace on stderr (see DEBUG MODE)  
+  --debug-file FILE      also write the trace to FILE (implies --debug)  
+   
+EXTRACT OPTIONS  
+  --since TS             start of capture window, e.g. '2026-10-07 08:00:00' (required)  
+  --until TS             end of capture window, exclusive (required)  
+  -o, --output FILE      JSONL output file (required)  
+  --types LIST           request_type values to capture, comma-separated  
+                         (default ALL = every request_type, no filter; to restrict,  
+                         e.g. QUERY or QUERY,DDL,LOAD,UTILITY,TXN,SET,...)  
+  --source-user USER     capture only statements issued by this user  
+  --exclude-user USER    drop statements from this user; repeatable  
+                         (monitoring/service accounts)  
+  --exclude-regex REGEX  drop statements matching this Vertica regex  
+                         (case-insensitive); repeatable  
+  --include-system       keep the internal/system statements that are excluded by  
+                         default (see below)  
+  --no-duration          do not join v_monitor.query_requests: skips the original  
+                         duration/success (use if that view is not accessible)  
+  --summary-file FILE    where to save the end-of-run summary  
+                         (default <output>.summary.txt; a .json twin is also written)  
+   
+  End-of-run summary (printed, and saved as .txt and .json): command line and all  
+  effective flags (defaults included), source, window, filters and the exclusion  
+  regexes applied, candidates vs captured (what the filters removed), first/last  
+  statement, sessions, users, request types, read-only vs non-read-only counts,  
+  original-duration coverage and stats, output size and SHA-256, and warnings.  
+   
+  Excluded by default: statements referencing v_catalog., v_monitor. or  
+  v_internal. (vsql \d, BI-tool metadata scans, monitoring), keepalives such as  
+  SELECT 1 / version() / current_*(), and anything touching dc_requests_issued.  
+  Order of the capture: time, session_id, statement_id, request_id.  
+  Each JSONL record: time, node_name, session_id, user_name, transaction_id,  
+  statement_id, request_id, request_type, request, request_duration_ms, success.  
+   
+REPLAY OPTIONS  
+  -i, --input FILE       JSONL produced by extract (required)  
+  -r, --report FILE      CSV report (default replay_report.csv)  
+  --mode {serial,session}  
+                         serial  (default): one connection, global order.  
+                         session: one connection per original session_id, run in  
+                         parallel; order kept within each session.  
+  --max-concurrency N    session mode: max simultaneous connections  
+                         (default 0 = one per session). If lower than the number of  
+                         sessions, later sessions wait for a free slot, so overlap  
+                         is lower than the original.  
+  --respect-timing       reproduce the original time offsets between statements  
+                         (without it: serial runs back to back; session mode starts  
+                         all sessions at once, i.e. a stress test)  
+  --speed X              with --respect-timing: 2.0 = twice as fast (default 1.0)    
+  --max-rows N           stop fetching after N rows per query (default 0 = all)  
+  --allow-dml            also run non-SELECT statements. DANGEROUS: by default only  
+                         SELECT/WITH run and everything else is reported SKIPPED  
+  --impersonate          run each statement as its original user using  
+                         SET SESSION AUTHORIZATION (needs a privileged replay  
                          account; the users must exist on the target)
   --server-timing        tag each statement with a leading comment, then read its
                          exact server-side duration from v_monitor.query_requests
