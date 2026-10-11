@@ -1,15 +1,15 @@
-vertica_replay.py - Capture queries from Vertica's Data Collector and replay them.  
+# vertica_replay.py - Capture queries from Vertica's Data Collector and replay them.  
    
-WORKFLOW (two steps, so the workload can be reviewed/archived before it runs)  
+## WORKFLOW (two steps, so the workload can be reviewed/archived before it runs)  
   1) extract : v_internal.dc_requests_issued (source DB)  ->  workload.jsonl  
   2) replay  : workload.jsonl  ->  target DB, plus a CSV comparison report  
    
-USAGE  
+## USAGE  
   vertica_replay.py extract -H HOST -d DB -u USER --since TS --until TS -o FILE [options]  
   vertica_replay.py replay  -H HOST -d DB -u USER -i FILE [-r REPORT] [options]  
   vertica_replay.py {extract|replay} -h        show all options of one command  
    
-CONNECTION OPTIONS (both commands)  
+## CONNECTION OPTIONS (both commands)  
   -H, --host HOST        Vertica host (required)  
   -P, --port PORT        port (default 5433)  
   -d, --database DB      database name (required)  
@@ -19,7 +19,7 @@ CONNECTION OPTIONS (both commands)
   --debug                verbose trace on stderr (see DEBUG MODE)  
   --debug-file FILE      also write the trace to FILE (implies --debug)  
    
-EXTRACT OPTIONS  
+## EXTRACT OPTIONS  
   --since TS             start of capture window, e.g. '2026-10-07 08:00:00' (required)  
   --until TS             end of capture window, exclusive (required)  
   -o, --output FILE      JSONL output file (required)  
@@ -51,7 +51,7 @@ EXTRACT OPTIONS
   Each JSONL record: time, node_name, session_id, user_name, transaction_id,  
   statement_id, request_id, request_type, request, request_duration_ms, success.  
    
-REPLAY OPTIONS  
+## REPLAY OPTIONS  
   -i, --input FILE       JSONL produced by extract (required)  
   -r, --report FILE      CSV report (default replay_report.csv)  
   --mode {serial,session}  
@@ -79,7 +79,7 @@ REPLAY OPTIONS
   --stop-on-error        stop at the first failing statement (default: continue)  
   --dry-run              print what would run (with the original user), execute nothing  
    
-DEBUG MODE (--debug / --debug-file, both commands)  
+## DEBUG MODE (--debug / --debug-file, both commands)  
   Timestamped, thread-tagged trace; the password is never logged. It shows:  
     extract : the exact SQL and bind parameters sent to the source database  
     replay  : effective settings and tag; connections (settings, connect time);  
@@ -93,7 +93,7 @@ DEBUG MODE (--debug / --debug-file, both commands)
   With --impersonate, debug mode runs one extra SELECT CURRENT_USER() per switch.  
   Tip: use --debug-file for large runs and grep by seq=N or by thread name.  
    
-REPORT COLUMNS (CSV; sort by seq for the original order)  
+## REPORT COLUMNS (CSV; sort by seq for the original order)  
   seq, original_time, session_id, original_user, statement_id,  
   status (OK | ERROR | SKIPPED | ABORTED),  
   original_duration_ms   server-side duration at capture  
@@ -105,28 +105,28 @@ REPORT COLUMNS (CSV; sort by seq for the original order)
   server_ratio           server_duration_ms / original_duration_ms (like-for-like)  
   The end-of-run summary prints counts per status plus total/median/p95 ratios.  
    
-EXAMPLES  
+## EXAMPLES  
   export VERTICA_PASSWORD=...  
    
-  # 1. capture one hour of production activity, minus monitoring noise  
+  1. capture one hour of production activity, minus monitoring noise  
   python vertica_replay.py extract -H prod-host -d prod -u dbadmin \  
       --since "2026-10-07 08:00:00" --until "2026-10-07 09:00:00" \  
       --exclude-user nagios_mon -o workload.jsonl  
    
-  # 2. check what would run  
+  2. check what would run  
   python vertica_replay.py replay -H test-host -d test -u replayer \  
       -i workload.jsonl --dry-run  
    
-  # 3a. strict global order, original pacing  
+  3a. strict global order, original pacing  
   python vertica_replay.py replay -H test-host -d test -u replayer \  
       -i workload.jsonl -r report.csv --respect-timing  
    
-  # 3b. reproduce concurrency, original users, like-for-like server timings  
+  3b. reproduce concurrency, original users, like-for-like server timings  
   python vertica_replay.py replay -H test-host -d test -u replay_admin \  
       -i workload.jsonl -r report.csv --mode session --respect-timing \  
       --max-concurrency 100 --impersonate --server-timing  
    
-NOTES  
+## NOTES  
   * Requirements: pip install vertica-python.  
   * extract needs access to v_internal DC tables (typically dbadmin or a granted  
     role) and, for durations, v_monitor.query_requests. DC/monitoring retention  
