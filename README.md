@@ -76,6 +76,14 @@
                          exact server-side duration from v_monitor.query_requests  
                          on the target and add server_duration_ms / server_ratio  
   --server-timing-wait S seconds to wait before reading that view (default 3.0)  
+  --progress {auto,bar,log,off}  
+                         progress on stderr: percent, done/total, OK/ERR counts,  
+                         elapsed, ETA, statements/s (session mode: sessions  
+                         done/running). bar = live one-line bar; log = a plain line  
+                         every --progress-interval seconds; auto (default) = bar on  
+                         a terminal, log when redirected or with --debug.  
+                         With --respect-timing the ETA is the original schedule's end.  
+  --progress-interval S  seconds between lines in log progress mode (default 10)  
   --stop-on-error        stop at the first failing statement (default: continue)  
   --dry-run              print what would run (with the original user), execute nothing  
    
