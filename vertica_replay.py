@@ -78,6 +78,14 @@ REPLAY OPTIONS
                          exact server-side duration from v_monitor.query_requests
                          on the target and add server_duration_ms / server_ratio
   --server-timing-wait S seconds to wait before reading that view (default 3.0)
+  --progress {auto,bar,log,off}
+                         progress on stderr: percent, done/total, OK/ERR counts,
+                         elapsed, ETA, statements/s (session mode: sessions
+                         done/running). bar = live one-line bar; log = a plain line
+                         every --progress-interval seconds; auto (default) = bar on
+                         a terminal, log when redirected or with --debug.
+                         With --respect-timing the ETA is the original schedule's end.
+  --progress-interval S  seconds between lines in log progress mode (default 10)
   --stop-on-error        stop at the first failing statement (default: continue)
   --dry-run              print what would run (with the original user), execute nothing
 
@@ -152,6 +160,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import statistics
 import sys
 import threading
@@ -487,6 +496,7 @@ class Reporter:
         self._w = csv.writer(self._f)
         self._lock = threading.Lock()
         self.counts = Counter()
+        self.progress = None  # set by cmd_replay when progress display is on
         self._orig_total = 0.0   # sums over successfully replayed statements
         self._replay_total = 0.0  # that have an original duration
         self._ratios = []
@@ -657,6 +667,8 @@ def run_session(a, rep, items, t0_orig, t0_wall, stop):
     conn = None
     state = {}
     log.debug("session %s start: %d statements", items[0][1]["session_id"], len(items))
+    if rep.progress:
+        rep.progress.session_started()
     try:
         for seq, r, sql in items:
             if stop.is_set():
@@ -684,6 +696,8 @@ def run_session(a, rep, items, t0_orig, t0_wall, stop):
                 stop.set()
     finally:
         log.debug("session %s done", items[0][1]["session_id"])
+        if rep.progress:
+            rep.progress.session_done()
         if conn:
             conn.close()
 
@@ -695,6 +709,8 @@ def replay_sessions(a, rep, items):
 
     peak = len(sessions)
     print(f"{len(items)} statements across {peak} sessions")
+    if rep.progress:
+        rep.progress.sessions_total = peak
 
     if a.dry_run:
         for sid, its in sessions.items():
@@ -787,18 +803,126 @@ def merge_server_timing(a, since):
               f"p95 {p95:.2f}")
 
 
+def hms(seconds):
+    seconds = int(max(0, seconds))
+    return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+
+
+class Progress:
+    """Live progress on stderr, fed by the Reporter's status counters.
+    bar: one self-updating line (terminal).  log: a plain line every
+    --progress-interval seconds (files, CI, --debug).  Runs in a daemon
+    thread, so it adds no cost to the statement loop."""
+
+    def __init__(self, a, rep, total, span_s, mode):
+        self.a, self.rep, self.total, self.span_s, self.mode = a, rep, total, span_s, mode
+        self.interval = 0.5 if mode == "bar" else max(a.progress_interval, 1.0)
+        self.t0 = time.monotonic()
+        self.sessions_total = 0
+        self._started = self._finished = 0
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="progress", daemon=True)
+
+    def session_started(self):
+        with self._lock:
+            self._started += 1
+
+    def session_done(self):
+        with self._lock:
+            self._finished += 1
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join(timeout=2)
+        self._render(final=True)
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            self._render()
+
+    def _text(self, with_bar):
+        c = self.rep.counts
+        done = c["OK"] + c["ERROR"] + c["ABORTED"]
+        el = time.monotonic() - self.t0
+        pct = 100.0 * done / self.total
+        rate = done / el if el > 0 else 0.0
+        if done >= self.total:
+            eta = "00:00:00"
+        elif self.a.respect_timing and self.span_s is not None:
+            # paced replay: the original schedule dictates the end, unless the
+            # replay is running behind it (then the observed rate is larger)
+            eta_s = max(0.0, self.span_s / self.a.speed - el)
+            if rate > 0:
+                eta_s = max(eta_s, (self.total - done) / rate)
+            eta = "~" + hms(eta_s)
+        elif rate > 0:
+            eta = "~" + hms((self.total - done) / rate)
+        else:
+            eta = "--:--:--"
+        head = ""
+        if with_bar:
+            n = int(20 * done / self.total)
+            head = "[" + "#" * n + "-" * (20 - n) + "] "
+        txt = (f"{head}{pct:5.1f}%  {done:,}/{self.total:,}  "
+               f"OK={c['OK']:,} ERR={c['ERROR']:,}")
+        if c["ABORTED"]:
+            txt += f" ABORTED={c['ABORTED']:,}"
+        if self.sessions_total:
+            with self._lock:
+                st, fin = self._started, self._finished
+            txt += f"  sessions {fin}/{self.sessions_total} (running {st - fin})"
+        txt += f"  elapsed {hms(el)}  ETA {eta}  {rate:.1f} stmt/s"
+        return txt
+
+    def _render(self, final=False):
+        if self.mode == "bar":
+            width = shutil.get_terminal_size((120, 20)).columns - 1
+            line = self._text(True)[:width]
+            sys.stderr.write("\r" + line.ljust(width if not final else len(line)))
+            if final:
+                sys.stderr.write("\n")
+        else:
+            sys.stderr.write("[progress] " + self._text(False) + "\n")
+        sys.stderr.flush()
+
+
+def start_progress(a, rep, items):
+    """Create and start the progress display, or return None if off/dry-run."""
+    if a.dry_run or not items or a.progress == "off":
+        return None
+    mode = a.progress
+    if mode == "auto":
+        mode = "bar" if (sys.stderr.isatty() and not (a.debug or a.debug_file)) else "log"
+    span = None
+    if len(items) > 1:
+        span = (datetime.fromisoformat(items[-1][1]["time"])
+                - datetime.fromisoformat(items[0][1]["time"])).total_seconds()
+    prog = Progress(a, rep, len(items), span, mode)
+    rep.progress = prog
+    prog.start()
+    return prog
+
+
 def cmd_replay(a):
     a.tag = f"vreplay:{int(time.time())}"
     log.debug("replay config: %s", {k: v for k, v in vars(a).items() if k != "func"})
     started = datetime.now(timezone.utc) - timedelta(minutes=1)
     rep = Reporter(a.report)
+    prog = None
     try:
         items = load_workload(a, rep)
+        prog = start_progress(a, rep, items)
         if a.mode == "session":
             replay_sessions(a, rep, items)
         else:
             replay_serial(a, rep, items)
     finally:
+        if prog:
+            prog.stop()
         rep.close()
     c = rep.counts
     print(f"OK={c['OK']} ERROR={c['ERROR']} SKIPPED={c['SKIPPED']} "
@@ -900,6 +1024,12 @@ def build_parser():
                         "target and add server_duration_ms/server_ratio to the report")
     r.add_argument("--server-timing-wait", type=float, default=3.0,
                    help="seconds to wait before reading v_monitor.query_requests (default 3)")
+    r.add_argument("--progress", choices=["auto", "bar", "log", "off"], default="auto",
+                   help="progress on stderr: bar = live one-line bar, log = a plain "
+                        "line every --progress-interval s, off = none "
+                        "(default auto: bar on a terminal, log otherwise or with --debug)")
+    r.add_argument("--progress-interval", type=float, default=10.0, metavar="S",
+                   help="seconds between lines in log progress mode (default 10)")
     r.add_argument("--stop-on-error", action="store_true",
                    help="stop at the first failing statement (default: continue)")
     r.add_argument("--dry-run", action="store_true",
